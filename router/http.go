@@ -161,7 +161,9 @@ func (h *httpSyncHandler) Set(data *router.Route) error {
 		TLSCert: route.TLSCert,
 		TLSKey:  route.TLSKey,
 		Sticky:  route.Sticky,
+		Paused:  route.Paused,
 	}
+	r.cond = sync.NewCond(&r.condMtx)
 
 	if r.TLSCert != "" && r.TLSKey != "" {
 		kp, err := tls.X509KeyPair([]byte(r.TLSCert), []byte(r.TLSKey))
@@ -335,6 +337,11 @@ func (s *HTTPListener) handle(conn net.Conn, isTLS bool) {
 	}
 
 	req.RemoteAddr = conn.RemoteAddr().String()
+	r.condMtx.RLock()
+	if r.Paused {
+		r.cond.Wait()
+	}
+	r.condMtx.RUnlock()
 	r.service.handle(req, sc, isTLS, r.Sticky)
 }
 
@@ -346,9 +353,25 @@ type httpRoute struct {
 	TLSCert string
 	TLSKey  string
 	Sticky  bool
+	Paused  bool
 
 	keypair *tls.Certificate
 	service *httpService
+	condMtx sync.RWMutex
+	cond    *sync.Cond
+}
+
+func (r *httpRoute) Pause() {
+	r.condMtx.Lock()
+	r.Paused = true
+	r.condMtx.Unlock()
+}
+
+func (r *httpRoute) Unpause() {
+	r.condMtx.Lock()
+	r.Paused = false
+	r.condMtx.Unlock()
+	r.cond.Broadcast()
 }
 
 // A service definition: name, and set of backends.
